@@ -1,0 +1,158 @@
+import { useCallback, useRef } from "react";
+import { Box, ViewTransform } from "@/types/types";
+import { BoxListItem } from "./BoxListItem";
+
+interface SidebarProps {
+    boxes: Box[];
+    selectedIndex: number;
+    onSelectBox: (index: number) => void;
+    onDeleteBox: (index: number) => void;
+    minimapCanvas: React.RefObject<HTMLCanvasElement | null>;
+    minimapViewport: React.RefObject<HTMLDivElement | null>;
+    viewTransform: ViewTransform;
+    onViewTransformChange: (transform: ViewTransform) => void;
+    currentImage: HTMLImageElement | null;
+}
+
+export function Sidebar({
+    boxes,
+    selectedIndex,
+    onSelectBox,
+    onDeleteBox,
+    minimapCanvas,
+    minimapViewport,
+    viewTransform,
+    onViewTransformChange,
+    currentImage,
+}: SidebarProps) {
+
+    const isDraggingRef = useRef(false);
+
+    const handleMinimapPointerDown = useCallback((e: React.PointerEvent) => {
+        const minimap = minimapCanvas.current;
+        const canvas = document.querySelector('canvas[class*="block bg-white"]') as HTMLCanvasElement;
+        if (!minimap || !canvas || !currentImage) return;
+
+        isDraggingRef.current = true;
+        e.currentTarget.setPointerCapture(e.pointerId);
+
+        const updateViewFromMinimap = (clientX: number, clientY: number) => {
+            const rect = minimap.getBoundingClientRect();
+            const containerWidth = rect.width;
+            const containerHeight = rect.height;
+
+            const scale = Math.min(containerWidth / currentImage.width, containerHeight / currentImage.height);
+            const w = currentImage.width * scale;
+            const h = currentImage.height * scale;
+            const x = (containerWidth - w) / 2;
+            const y = (containerHeight - h) / 2;
+
+            // Get click position relative to minimap image
+            const clickX = clientX - rect.left - x;
+            const clickY = clientY - rect.top - y;
+
+            // Convert to image coordinates
+            const imageX = clickX / scale;
+            const imageY = clickY / scale;
+
+            // Calculate new offsets to center this point in the main canvas
+            const canvasRect = canvas.getBoundingClientRect();
+            const newOffsetX = canvasRect.width / 2 - imageX * viewTransform.scale;
+            const newOffsetY = canvasRect.height / 2 - imageY * viewTransform.scale;
+
+            onViewTransformChange({
+                ...viewTransform,
+                offsetX: newOffsetX,
+                offsetY: newOffsetY
+            });
+        };
+
+        updateViewFromMinimap(e.clientX, e.clientY);
+    }, [minimapCanvas, currentImage, viewTransform, onViewTransformChange]);
+
+    const handleMinimapPointerMove = useCallback((e: React.PointerEvent) => {
+        if (!isDraggingRef.current) return;
+
+        const minimap = minimapCanvas.current;
+        const canvas = document.querySelector('canvas[class*="block bg-white"]') as HTMLCanvasElement;
+        if (!minimap || !canvas || !currentImage) return;
+
+        const rect = minimap.getBoundingClientRect();
+        const containerWidth = rect.width;
+        const containerHeight = rect.height;
+
+        const scale = Math.min(containerWidth / currentImage.width, containerHeight / currentImage.height);
+        const w = currentImage.width * scale;
+        const h = currentImage.height * scale;
+        const x = (containerWidth - w) / 2;
+        const y = (containerHeight - h) / 2;
+
+        const clickX = e.clientX - rect.left - x;
+        const clickY = e.clientY - rect.top - y;
+
+        const imageX = clickX / scale;
+        const imageY = clickY / scale;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        const newOffsetX = canvasRect.width / 2 - imageX * viewTransform.scale;
+        const newOffsetY = canvasRect.height / 2 - imageY * viewTransform.scale;
+
+        onViewTransformChange({
+            ...viewTransform,
+            offsetX: newOffsetX,
+            offsetY: newOffsetY
+        });
+    }, [minimapCanvas, currentImage, viewTransform, onViewTransformChange]);
+
+    const handleMinimapPointerUp = useCallback(() => {
+        isDraggingRef.current = false;
+    }, []);
+
+    const handleSelect = useCallback((index: number) => onSelectBox(index), [onSelectBox]);
+    const handleDelete = useCallback((index: number) => onDeleteBox(index), [onDeleteBox]);
+
+    return (
+        <aside className="w-[280px] bg-[#2c3e50] text-white border-l border-[#34495e] flex flex-col">
+            <section className="p-4 border-b border-[#34495e]" aria-labelledby="minimap-heading">
+                <h3 id="minimap-heading" className="mb-2 text-sm text-[#ecf0f1] uppercase tracking-[0.5px]">
+                    Minimap
+                </h3>
+                <div
+                    className="w-full h-[150px] bg-[#1a1a1a] rounded relative overflow-hidden cursor-pointer"
+                    onPointerDown={handleMinimapPointerDown}
+                    onPointerMove={handleMinimapPointerMove}
+                    onPointerUp={handleMinimapPointerUp}
+                    onPointerCancel={handleMinimapPointerUp}
+                >
+                    <canvas ref={minimapCanvas} className="w-full h-full block" />
+                    <div
+                        ref={minimapViewport}
+                        className="absolute border-2 border-[#4a90e2] bg-[rgba(74,144,226,0.2)] pointer-events-none"
+                    />
+                </div>
+            </section>
+            <section className="p-4 border-b border-[#34495e]" aria-labelledby="boxes-heading">
+                <h3 id="boxes-heading" className="mb-2 text-sm text-[#ecf0f1] uppercase tracking-[0.5px]">
+                    Boxes ({boxes.length})
+                </h3>
+            </section>
+
+            <div className="flex-1 overflow-y-auto px-4 sidebar-scroll">
+                {boxes.length === 0 ? (
+                    <p className="text-sm text-gray-400 italic">No boxes yet.</p>
+                ) : (
+                    boxes.map((box, index) => (
+                        <BoxListItem
+                            key={index}
+                            box={box}
+                            index={index}
+                            isSelected={index === selectedIndex}
+                            onSelect={() => handleSelect(index)}
+                            onDelete={() => handleDelete(index)}
+                        />
+                    ))
+                )}
+            </div>
+        </aside>
+    );
+}
