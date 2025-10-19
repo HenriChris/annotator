@@ -19,7 +19,7 @@ export interface ViewTransform {
   offsetY: number;
 }
 
-export type Mode = 'draw' | 'delete';
+export type Mode = 'draw' | 'delete' | 'pan';
 export type ResizeSide = 'top' | 'bottom' | 'left' | 'right' | null;
 
 export interface Color {

@@ -84,6 +84,7 @@ function NavigationSection({
 }
 
 const MODES: { label: string; icon: string; value: Mode }[] = [
+    { label: "Pan", icon: "✋", value: "pan" },
     { label: "Draw", icon: "✏️", value: "draw" },
     { label: "Delete", icon: "🗑️", value: "delete" },
 ];
@@ -235,7 +236,6 @@ export function Toolbar({
         }),
         [annotatedCount, totalImages]
     );
-    console.log(color)
 
     return (
         <div

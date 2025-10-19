@@ -377,6 +377,14 @@ function usePointerInteraction(
             } else if (mode === 'delete') {
                 setInteractionState({ type: 'drawing', startPos: pos, currentPos: pos });
                 setSelectedBoxIndex(-1);
+            } else if (mode === 'pan') {
+                setInteractionState({
+                    type: 'moving',
+                    index: -1,
+                    startPos: { x: e.clientX, y: e.clientY },
+                    boxStartPos: { x: viewTransform.offsetX, y: viewTransform.offsetY }
+                });
+                setSelectedBoxIndex(-1);
             }
         } else if (e.pointerType === 'touch') {
             if (touchGestures.pointersRef.current.size === 2) {
@@ -420,12 +428,24 @@ function usePointerInteraction(
 
                 onBoxesChange(newBoxes);
             } else if (interactionState.type === 'moving') {
-                const dx = pos.x - interactionState.startPos.x;
-                const dy = pos.y - interactionState.startPos.y;
-                const newBoxes = [...boxes];
-                newBoxes[interactionState.index].x = interactionState.boxStartPos.x + dx;
-                newBoxes[interactionState.index].y = interactionState.boxStartPos.y + dy;
-                onBoxesChange(newBoxes);
+                if (interactionState.index === -1) {
+                    // Panning the view - calculate delta from start position
+                    const screenDx = e.clientX - interactionState.startPos.x;
+                    const screenDy = e.clientY - interactionState.startPos.y;
+                    onViewTransformChange({
+                        scale: viewTransform.scale,
+                        offsetX: interactionState.boxStartPos.x + screenDx,
+                        offsetY: interactionState.boxStartPos.y + screenDy
+                    });
+                } else {
+                    // Moving a box
+                    const dx = pos.x - interactionState.startPos.x;
+                    const dy = pos.y - interactionState.startPos.y;
+                    const newBoxes = [...boxes];
+                    newBoxes[interactionState.index].x = interactionState.boxStartPos.x + dx;
+                    newBoxes[interactionState.index].y = interactionState.boxStartPos.y + dy;
+                    onBoxesChange(newBoxes);
+                }
             } else if (interactionState.type === 'drawing') {
                 setInteractionState({ ...interactionState, currentPos: pos });
             }
@@ -472,7 +492,9 @@ function usePointerInteraction(
 
         if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
             if (interactionState.type === 'resizing' || interactionState.type === 'moving') {
-                onComplete(boxes, true);
+                if (interactionState.type !== 'moving' || interactionState.index !== -1) {
+                    onComplete(boxes, true);
+                }
                 setInteractionState({ type: 'idle' });
             } else if (interactionState.type === 'drawing') {
                 const { startPos, currentPos } = interactionState;
@@ -553,7 +575,7 @@ export default function AnnotationTool() {
     const [appState, setAppState] = useState<AppState | null>(null);
 
     // UI state
-    const [mode, setMode] = useState<Mode>('draw');
+    const [mode, setMode] = useState<Mode>('pan');
     const [currentColor, setCurrentColor] = useState(COLORS[0].value);
     const [isOccluded, setIsOccluded] = useState(false);
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -830,30 +852,16 @@ export default function AnnotationTool() {
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
 
-            if (e.ctrlKey || e.metaKey) {
-                // Zoom with Ctrl/Cmd + wheel
-                const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-                const newScale = Math.max(0.1, Math.min(10, viewTransform.scale * zoomFactor));
+            // Zoom with mouse wheel (no modifier keys needed)
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newScale = Math.max(0.1, Math.min(10, viewTransform.scale * zoomFactor));
 
-                // Zoom towards mouse position
-                const worldPos = screenToCanvas(e.clientX, e.clientY);
-                const newOffsetX = mouseX - worldPos.x * newScale;
-                const newOffsetY = mouseY - worldPos.y * newScale;
+            // Zoom towards mouse position
+            const worldPos = screenToCanvas(e.clientX, e.clientY);
+            const newOffsetX = mouseX - worldPos.x * newScale;
+            const newOffsetY = mouseY - worldPos.y * newScale;
 
-                setClampedViewTransform({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
-            } else if (e.shiftKey) {
-                // Horizontal pan with Shift + wheel
-                setClampedViewTransform({
-                    ...viewTransform,
-                    offsetX: viewTransform.offsetX - e.deltaY
-                });
-            } else {
-                // Vertical pan with wheel
-                setClampedViewTransform({
-                    ...viewTransform,
-                    offsetY: viewTransform.offsetY - e.deltaY
-                });
-            }
+            setClampedViewTransform({ scale: newScale, offsetX: newOffsetX, offsetY: newOffsetY });
         };
 
         canvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -988,6 +996,11 @@ export default function AnnotationTool() {
             else if (e.key === 'x' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 handleModeChange('delete');
+            }
+            // P key for pan mode  // Add this entire block
+            else if (e.key === 'p' && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                handleModeChange('pan');
             }
             // Escape to deselect
             else if (e.key === 'Escape') {
