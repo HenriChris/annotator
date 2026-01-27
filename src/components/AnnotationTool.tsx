@@ -658,15 +658,16 @@ export default function AnnotationTool() {
 
     // Save function
     const saveAnnotations = useCallback(async (showMessage = true) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!currentImage) return;
 
         const imageName = images[currentImageIndex];
+
+        // Clamp to actual image dimensions, not canvas/screen dimensions
         const clampedBoxes = boxes
-            .map(b => clampBox(b, canvas.width, canvas.height))
+            .map(b => clampBox(b, currentImage.width, currentImage.height))
             .filter(b => b.width > 0 && b.height > 0);
 
-        const success = await postAnnotations(imageName, clampedBoxes, canvas.width, canvas.height);
+        const success = await postAnnotations(imageName, clampedBoxes, currentImage.width, currentImage.height);
 
         if (success) {
             setHasUnsavedChanges(false);
@@ -687,9 +688,10 @@ export default function AnnotationTool() {
                 setStatus({ message: 'Annotations saved!', type: 'success' });
             }
         } else {
+            console.error(`[Frontend] Failed to save annotations for ${imageName}`);
             setStatus({ message: 'Error saving annotations', type: 'error' });
         }
-    }, [boxes, currentImageIndex, images, appState]);
+    }, [boxes, currentImageIndex, images, appState, currentImage]);
 
     // Image management
     const { loadImage, fitImageToScreen } = useImageManager(
