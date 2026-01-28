@@ -1,12 +1,17 @@
 import { useCallback, useRef } from "react";
-import { Box, ViewTransform } from "@/types/types";
+import { Box, Mask, ViewTransform } from "@/types/types";
 import { BoxListItem } from "./BoxListItem";
+import { MaskListItem } from "./MaskListItem";
 
 interface SidebarProps {
     boxes: Box[];
     selectedIndex: number;
     onSelectBox: (index: number) => void;
     onDeleteBox: (index: number) => void;
+    masks: Mask[];
+    selectedMaskIndex: number;
+    onSelectMask: (index: number) => void;
+    onDeleteMask: (index: number) => void;
     minimapCanvas: React.RefObject<HTMLCanvasElement | null>;
     minimapViewport: React.RefObject<HTMLDivElement | null>;
     viewTransform: ViewTransform;
@@ -19,6 +24,10 @@ export function Sidebar({
     selectedIndex,
     onSelectBox,
     onDeleteBox,
+    masks,
+    selectedMaskIndex,
+    onSelectMask,
+    onDeleteMask,
     minimapCanvas,
     minimapViewport,
     viewTransform,
@@ -108,8 +117,10 @@ export function Sidebar({
         isDraggingRef.current = false;
     }, []);
 
-    const handleSelect = useCallback((index: number) => onSelectBox(index), [onSelectBox]);
-    const handleDelete = useCallback((index: number) => onDeleteBox(index), [onDeleteBox]);
+    const handleSelectBox = useCallback((index: number) => onSelectBox(index), [onSelectBox]);
+    const handleDeleteBoxItem = useCallback((index: number) => onDeleteBox(index), [onDeleteBox]);
+    const handleSelectMask = useCallback((index: number) => onSelectMask(index), [onSelectMask]);
+    const handleDeleteMaskItem = useCallback((index: number) => onDeleteMask(index), [onDeleteMask]);
 
     return (
         <aside className="w-[280px] bg-[#2c3e50] text-white border-l border-[#34495e] flex flex-col">
@@ -143,16 +154,40 @@ export function Sidebar({
                 ) : (
                     boxes.map((box, index) => (
                         <BoxListItem
-                            key={index}
+                            key={`box-${index}`}
                             box={box}
                             index={index}
                             isSelected={index === selectedIndex}
-                            onSelect={() => handleSelect(index)}
-                            onDelete={() => handleDelete(index)}
+                            onSelect={() => handleSelectBox(index)}
+                            onDelete={() => handleDeleteBoxItem(index)}
                         />
                     ))
                 )}
             </div>
+
+            <section className="p-4 border-b border-[#34495e]" aria-labelledby="masks-heading">
+                <h3 id="masks-heading" className="mb-2 text-sm text-[#ecf0f1] uppercase tracking-[0.5px]">
+                    Masks ({masks.length})
+                </h3>
+            </section>
+
+            <div className="flex-1 overflow-y-auto px-4 sidebar-scroll">
+                {masks.length === 0 ? (
+                    <p className="text-sm text-gray-400 italic">No masks yet.</p>
+                ) : (
+                    masks.map((mask, index) => (
+                        <MaskListItem
+                            key={`mask-${index}`}
+                            mask={mask}
+                            index={index}
+                            isSelected={index === selectedMaskIndex}
+                            onSelect={() => handleSelectMask(index)}
+                            onDelete={() => handleDeleteMaskItem(index)}
+                        />
+                    ))
+                )}
+            </div>
+
         </aside>
     );
 }

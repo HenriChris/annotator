@@ -16,14 +16,15 @@ import argparse
 from pathlib import Path
 
 
-def boxes_to_cvat_xml(image_name, boxes, width=None, height=None, image_id=0):
-    """Convert boxes to CVAT 1.1 XML format for a single image"""
+def annotations_to_cvat_xml(image_name, boxes, masks=None, width=None, height=None, image_id=0):
+    """Convert boxes and masks to CVAT 1.1 XML format for a single image"""
     # Use provided dimensions or defaults
     w = width if width is not None else 1920
     h = height if height is not None else 1080
     
     xml = f'  <image id="{image_id}" name="{image_name}" width="{w}" height="{h}">\n'
     
+    # Process Boxes
     for box in boxes:
         xtl = round(box['x'])
         ytl = round(box['y'])
@@ -34,11 +35,24 @@ def boxes_to_cvat_xml(image_name, boxes, width=None, height=None, image_id=0):
         xml += f'    <box label="object" occluded="{occluded}" source="manual" '
         xml += f'xtl="{xtl}" ytl="{ytl}" xbr="{xbr}" ybr="{ybr}" z_order="0">\n'
         
-        # Add color attribute if present
         if 'color' in box:
             xml += f'      <attribute name="color">{box["color"]}</attribute>\n'
         
         xml += '    </box>\n'
+    
+    # Process Masks as Polygons
+    if masks:
+        for mask in masks:
+            points_str = ";".join([f"{round(p['x'], 2)},{round(p['y'], 2)}" for p in mask['points']])
+            occluded = '1' if mask.get('occluded', False) else '0'
+            
+            xml += f'    <polygon label="object" occluded="{occluded}" source="manual" '
+            xml += f'points="{points_str}" z_order="0">\n'
+            
+            if 'color' in mask:
+                xml += f'      <attribute name="color">{mask["color"]}</attribute>\n'
+                
+            xml += '    </polygon>\n'
     
     xml += '  </image>\n'
     return xml
@@ -68,7 +82,7 @@ def export_single_file(db_path, output_file):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT image_name, boxes, width, height FROM annotations ORDER BY image_name')
+    cursor.execute('SELECT image_name, boxes, masks, width, height FROM annotations ORDER BY image_name')
     rows = cursor.fetchall()
     
     if not rows:
@@ -78,10 +92,11 @@ def export_single_file(db_path, output_file):
     
     xml = create_cvat_header()
     
-    for idx, (image_name, boxes_json, width, height) in enumerate(rows):
+    for idx, (image_name, boxes_json, masks_json, width, height) in enumerate(rows):
         boxes = json.loads(boxes_json)
-        if boxes:  # Only include images with boxes
-            xml += boxes_to_cvat_xml(image_name, boxes, width, height, image_id=idx)
+        masks = json.loads(masks_json) if masks_json else []
+        if boxes or masks:  # Only include images with boxes or masks
+            xml += annotations_to_cvat_xml(image_name, boxes, masks, width, height, image_id=idx)
     
     xml += create_cvat_footer()
     
@@ -101,7 +116,7 @@ def export_separate_files(db_path, output_dir):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT image_name, boxes, width, height FROM annotations')
+    cursor.execute('SELECT image_name, boxes, masks, width, height FROM annotations')
     rows = cursor.fetchall()
     
     if not rows:
@@ -114,15 +129,16 @@ def export_separate_files(db_path, output_dir):
     
     exported_count = 0
     
-    for image_name, boxes_json, width, height in rows:
+    for image_name, boxes_json, masks_json, width, height in rows:
         boxes = json.loads(boxes_json)
+        masks = json.loads(masks_json) if masks_json else []
         
-        if not boxes:
+        if not boxes and not masks:
             continue
         
         # Create XML for this image
         xml = create_cvat_header()
-        xml += boxes_to_cvat_xml(image_name, boxes, width, height, image_id=0)
+        xml += annotations_to_cvat_xml(image_name, boxes, masks, width, height, image_id=0)
         xml += create_cvat_footer()
         
         # Generate output filename
@@ -144,7 +160,7 @@ def export_single_image(db_path, image_name, output_file=None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT boxes, width, height FROM annotations WHERE image_name = ?', (image_name,))
+    cursor.execute('SELECT boxes, masks, width, height FROM annotations WHERE image_name = ?', (image_name,))
     row = cursor.fetchone()
     
     if not row:
@@ -152,17 +168,18 @@ def export_single_image(db_path, image_name, output_file=None):
         conn.close()
         return
     
-    boxes_json, width, height = row
+    boxes_json, masks_json, width, height = row
     boxes = json.loads(boxes_json)
+    masks = json.loads(masks_json) if masks_json else []
     
-    if not boxes:
-        print(f"⚠️  Image {image_name} has no boxes")
+    if not boxes and not masks:
+        print(f"⚠️  Image {image_name} has no annotations")
         conn.close()
         return
     
     # Create XML
     xml = create_cvat_header()
-    xml += boxes_to_cvat_xml(image_name, boxes, width, height, image_id=0)
+    xml += annotations_to_cvat_xml(image_name, boxes, masks, width, height, image_id=0)
     xml += create_cvat_footer()
     
     # Determine output file
@@ -188,6 +205,7 @@ def list_annotations(db_path):
     cursor.execute('''
         SELECT image_name, 
                json_array_length(boxes) as box_count,
+               json_array_length(masks) as mask_count,
                datetime(updated_at, 'localtime') as last_updated
         FROM annotations 
         ORDER BY updated_at DESC
@@ -201,11 +219,11 @@ def list_annotations(db_path):
         return
     
     print(f"\n📊 Found {len(rows)} annotated images:\n")
-    print(f"{'Image Name':<40} {'Boxes':<10} {'Last Updated'}")
-    print("-" * 70)
+    print(f"{'Image Name':<40} {'Boxes':<10} {'Masks':<10} {'Last Updated'}")
+    print("-" * 80)
     
-    for image_name, box_count, updated_at in rows:
-        print(f"{image_name:<40} {box_count:<10} {updated_at}")
+    for image_name, box_count, mask_count, updated_at in rows:
+        print(f"{image_name:<40} {box_count:<10} {mask_count:<10} {updated_at}")
     
     conn.close()
 
@@ -230,7 +248,7 @@ Examples:
         '''
     )
     
-    parser.add_argument('--db', default='annotations.db', 
+    parser.add_argument('--db', default='./data/annotations.db', 
                        help='Path to SQLite database (default: annotations.db)')
     parser.add_argument('--output-dir', default='./annotations',
                        help='Output directory for separate XML files (default: ./annotations)')

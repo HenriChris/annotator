@@ -20,6 +20,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_name TEXT NOT NULL UNIQUE,
     boxes TEXT NOT NULL,
+    masks TEXT NOT NULL DEFAULT '[]',
     width INTEGER,
     height INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -39,6 +40,17 @@ export interface AppState {
   currentColor: string;
 }
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface Mask {
+  points: Point[];
+  color: string;
+  occluded: boolean;
+}
+
 export interface Box {
   x: number;
   y: number;
@@ -50,6 +62,7 @@ export interface Box {
 
 export interface AnnotationData {
   boxes: Box[];
+  masks?: Mask[];
   width?: number;
   height?: number;
 }
@@ -79,8 +92,9 @@ export function saveAppState(state: AppState): void {
 
 // Annotations operations
 export function getAnnotations(imageName: string): AnnotationData | null {
-  const row = db.prepare('SELECT boxes, width, height FROM annotations WHERE image_name = ?').get(imageName) as {
+  const row = db.prepare('SELECT boxes, masks, width, height FROM annotations WHERE image_name = ?').get(imageName) as {
     boxes: string;
+    masks: string;
     width: number | null;
     height: number | null;
   } | undefined;
@@ -91,6 +105,7 @@ export function getAnnotations(imageName: string): AnnotationData | null {
 
   return {
     boxes: JSON.parse(row.boxes),
+    masks: JSON.parse(row.masks || '[]'),
     width: row.width ?? undefined,
     height: row.height ?? undefined,
   };
@@ -98,16 +113,18 @@ export function getAnnotations(imageName: string): AnnotationData | null {
 
 export function saveAnnotations(imageName: string, data: AnnotationData): void {
   db.prepare(`
-    INSERT INTO annotations (image_name, boxes, width, height)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO annotations (image_name, boxes, masks, width, height)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(image_name) DO UPDATE SET
       boxes = excluded.boxes,
+      masks = excluded.masks,
       width = excluded.width,
       height = excluded.height,
       updated_at = CURRENT_TIMESTAMP
   `).run(
     imageName,
     JSON.stringify(data.boxes),
+    JSON.stringify(data.masks || []),
     data.width ?? null,
     data.height ?? null
   );

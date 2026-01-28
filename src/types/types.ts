@@ -1,3 +1,14 @@
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface Mask {
+  points: Point[];
+  color: string;
+  occluded: boolean;
+}
+
 export interface Box {
   x: number;
   y: number;
@@ -19,7 +30,7 @@ export interface ViewTransform {
   offsetY: number;
 }
 
-export type Mode = 'draw' | 'delete' | 'pan';
+export type Mode = 'draw' | 'mask' | 'delete' | 'pan';
 export type ResizeSide = 'top' | 'bottom' | 'left' | 'right' | null;
 
 export interface Color {

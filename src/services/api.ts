@@ -1,4 +1,4 @@
-import { AppState, Box } from "@/types/types";
+import { AppState, Box, Mask } from "@/types/types";
 
 export async function getState(): Promise<AppState | null> {
   try {
@@ -26,7 +26,7 @@ export async function getImages(): Promise<string[]> {
   return await res.json();
 }
 
-export async function getAnnotations(imageName: string): Promise<{ boxes: Box[] } | null> {
+export async function getAnnotations(imageName: string): Promise<{ boxes: Box[], masks: Mask[] } | null> {
   try {
     const res = await fetch(`/api/annotations/${imageName}`);
     return res.ok ? await res.json() : null;
@@ -35,12 +35,12 @@ export async function getAnnotations(imageName: string): Promise<{ boxes: Box[] 
   }
 }
 
-export async function postAnnotations(imageName: string, boxes: Box[], width: number, height: number): Promise<boolean> {
+export async function postAnnotations(imageName: string, boxes: Box[], masks: Mask[], width: number, height: number): Promise<boolean> {
   try {
     const res = await fetch(`/api/annotations/${imageName}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ boxes, width, height })
+      body: JSON.stringify({ boxes, masks, width, height })
     });
     return res.ok;
   } catch {

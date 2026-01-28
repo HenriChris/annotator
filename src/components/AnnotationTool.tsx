@@ -1,8 +1,8 @@
 'use client';
 
 import { COLORS, AUTO_SAVE_INTERVAL } from "@/constants/constants";
-import { Box, AppState, ViewTransform, ResizeSide, Mode } from "@/types/types";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { Box, Mask, AppState, ViewTransform, ResizeSide, Mode, Point } from "@/types/types";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Sidebar } from "./Sidebar";
 import { StatusNotification } from "./StatusNotification";
 import { Toolbar } from "./Toolbar";
@@ -18,7 +18,8 @@ type InteractionState =
     | { type: 'idle' }
     | { type: 'drawing'; startPos: { x: number; y: number }; currentPos: { x: number; y: number } }
     | { type: 'resizing'; index: number; side: ResizeSide }
-    | { type: 'moving'; index: number; startPos: { x: number; y: number }; boxStartPos: { x: number; y: number } };
+    | { type: 'moving'; index: number; startPos: { x: number; y: number }; boxStartPos: { x: number; y: number } }
+    | { type: 'masking'; points: { x: number; y: number }[] };
 
 // ============================================================================
 // CUSTOM HOOKS
@@ -49,6 +50,7 @@ function useCanvasDrawing(
     canvasRef: React.RefObject<HTMLCanvasElement | null>,
     currentImage: HTMLImageElement | null,
     boxes: Box[],
+    masks: Mask[],
     selectedBoxIndex: number,
     viewTransform: ViewTransform,
     interactionState: InteractionState,
@@ -106,6 +108,29 @@ function useCanvasDrawing(
             }
         });
 
+        // Draw all masks
+        masks.forEach((mask) => {
+            if (mask.points.length < 2) return;
+
+            ctx.strokeStyle = mask.color;
+            ctx.lineWidth = 2 / scale;
+            if (mask.occluded) {
+                ctx.setLineDash([10 / scale, 5 / scale]);
+            }
+
+            ctx.beginPath();
+            ctx.moveTo(mask.points[0].x, mask.points[0].y);
+            for (let i = 1; i < mask.points.length; i++) {
+                ctx.lineTo(mask.points[i].x, mask.points[i].y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+
+            ctx.fillStyle = mask.color + '20';
+            ctx.fill();
+            ctx.setLineDash([]);
+        });
+
         // Draw current interaction
         if (interactionState.type === 'drawing') {
             const { startPos, currentPos } = interactionState;
@@ -129,8 +154,25 @@ function useCanvasDrawing(
                 ctx.fillRect(startPos.x, startPos.y, width, height);
                 ctx.setLineDash([]);
             }
+        } else if (interactionState.type === 'masking') {
+            const { points } = interactionState;
+            if (points.length > 0) {
+                ctx.strokeStyle = currentColor;
+                ctx.lineWidth = 2 / scale;
+                if (isOccluded) {
+                    ctx.setLineDash([10 / scale, 5 / scale]);
+                }
+
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
         }
-    }, [canvasRef, currentImage, boxes, selectedBoxIndex, viewTransform, interactionState, mode, currentColor, isOccluded]);
+    }, [canvasRef, currentImage, boxes, masks, selectedBoxIndex, viewTransform, interactionState, mode, currentColor, isOccluded]);
 
     useEffect(() => {
         draw();
@@ -148,6 +190,7 @@ function useMinimapDrawing(
     canvasRef: React.RefObject<HTMLCanvasElement | null>,
     currentImage: HTMLImageElement | null,
     boxes: Box[],
+    masks: Mask[],
     viewTransform: ViewTransform
 ) {
     const drawMinimap = useCallback(() => {
@@ -168,9 +211,6 @@ function useMinimapDrawing(
         minimap.width = containerWidth;
         minimap.height = containerHeight;
 
-        // const scale = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
-        // const w = canvas.width * scale;
-        // const h = canvas.height * scale;
         const scale = Math.min(containerWidth / currentImage.width, containerHeight / currentImage.height);
         const w = currentImage.width * scale;
         const h = currentImage.height * scale;
@@ -193,8 +233,19 @@ function useMinimapDrawing(
             );
         });
 
+        masks.forEach(mask => {
+            if (mask.points.length < 2) return;
+            ctx.strokeStyle = mask.color;
+            ctx.beginPath();
+            ctx.moveTo(x + mask.points[0].x * scale, y + mask.points[0].y * scale);
+            for (let i = 1; i < mask.points.length; i++) {
+                ctx.lineTo(x + mask.points[i].x * scale, y + mask.points[i].y * scale);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        });
+
         const rect = canvas.getBoundingClientRect();
-        // const viewportScale = w / canvas.width;
         const viewportScale = w / currentImage.width;
         const vpWidth = (rect.width / viewTransform.scale) * viewportScale;
         const vpHeight = (rect.height / viewTransform.scale) * viewportScale;
@@ -205,7 +256,7 @@ function useMinimapDrawing(
         viewport.style.top = vpY + 'px';
         viewport.style.width = vpWidth + 'px';
         viewport.style.height = vpHeight + 'px';
-    }, [minimapRef, minimapViewportRef, canvasRef, currentImage, boxes, viewTransform]);
+    }, [minimapRef, minimapViewportRef, canvasRef, currentImage, boxes, masks, viewTransform]);
 
     useEffect(() => {
         drawMinimap();
@@ -233,7 +284,6 @@ function useImageManager(
         const wrapper = canvasWrapperRef.current;
         if (!canvas || !container || !wrapper) return { scale: 1, offsetX: 0, offsetY: 0 };
 
-        // Size canvas to fill most of the container
         const maxWidth = container.clientWidth - 100;
         const maxHeight = container.clientHeight - 100;
 
@@ -242,12 +292,10 @@ function useImageManager(
         wrapper.style.width = maxWidth + 'px';
         wrapper.style.height = maxHeight + 'px';
 
-        // Calculate scale to fit image within canvas
         const scaleX = maxWidth / imageWidth;
         const scaleY = maxHeight / imageHeight;
-        const scale = Math.min(scaleX, scaleY, 0.9); // 0.9 to leave a small margin
+        const scale = Math.min(scaleX, scaleY, 0.9);
 
-        // Center the image
         const offsetX = (maxWidth - imageWidth * scale) / 2;
         const offsetY = (maxHeight - imageHeight * scale) / 2;
 
@@ -255,7 +303,6 @@ function useImageManager(
     }, [canvasRef, containerRef, canvasWrapperRef]);
 
     const loadImage = useCallback(async (index: number) => {
-
         if (index < 0 || index >= images.length) return;
 
         if (hasUnsavedChanges) {
@@ -316,14 +363,14 @@ function useTouchGestures() {
         y: (p1.clientY + p2.clientY) / 2,
     });
 
-    return {
+    return useMemo(() => ({
         pointersRef,
         lastTouchDistRef,
         lastTouchMidRef,
         panStartRef,
         getDistance,
         getMidpoint,
-    };
+    }), []);
 }
 
 /**
@@ -332,6 +379,7 @@ function useTouchGestures() {
 function usePointerInteraction(
     mode: Mode,
     boxes: Box[],
+    masks: Mask[],
     viewTransform: ViewTransform,
     screenToCanvas: (x: number, y: number) => { x: number; y: number },
     touchGestures: ReturnType<typeof useTouchGestures>,
@@ -347,7 +395,6 @@ function usePointerInteraction(
             const pos = screenToCanvas(e.clientX, e.clientY);
 
             if (mode === 'draw') {
-                // Check for resize handles
                 for (let i = boxes.length - 1; i >= 0; i--) {
                     const handle = getResizeHandle(pos.x, pos.y, boxes[i], viewTransform.scale);
                     if (handle) {
@@ -357,7 +404,6 @@ function usePointerInteraction(
                     }
                 }
 
-                // Check for move
                 for (let i = boxes.length - 1; i >= 0; i--) {
                     if (isPointInRect(pos.x, pos.y, boxes[i])) {
                         setInteractionState({
@@ -371,9 +417,11 @@ function usePointerInteraction(
                     }
                 }
 
-                // Start drawing
                 setSelectedBoxIndex(-1);
                 setInteractionState({ type: 'drawing', startPos: pos, currentPos: pos });
+            } else if (mode === 'mask') {
+                setInteractionState({ type: 'masking', points: [pos] });
+                setSelectedBoxIndex(-1);
             } else if (mode === 'delete') {
                 setInteractionState({ type: 'drawing', startPos: pos, currentPos: pos });
                 setSelectedBoxIndex(-1);
@@ -429,7 +477,6 @@ function usePointerInteraction(
                 onBoxesChange(newBoxes);
             } else if (interactionState.type === 'moving') {
                 if (interactionState.index === -1) {
-                    // Panning the view - calculate delta from start position
                     const screenDx = e.clientX - interactionState.startPos.x;
                     const screenDy = e.clientY - interactionState.startPos.y;
                     onViewTransformChange({
@@ -438,7 +485,6 @@ function usePointerInteraction(
                         offsetY: interactionState.boxStartPos.y + screenDy
                     });
                 } else {
-                    // Moving a box
                     const dx = pos.x - interactionState.startPos.x;
                     const dy = pos.y - interactionState.startPos.y;
                     const newBoxes = [...boxes];
@@ -448,6 +494,11 @@ function usePointerInteraction(
                 }
             } else if (interactionState.type === 'drawing') {
                 setInteractionState({ ...interactionState, currentPos: pos });
+            } else if (interactionState.type === 'masking') {
+                setInteractionState({
+                    ...interactionState,
+                    points: [...interactionState.points, pos]
+                });
             }
         } else if (e.pointerType === 'touch') {
             touchGestures.pointersRef.current.set(e.pointerId, e.nativeEvent);
@@ -486,14 +537,14 @@ function usePointerInteraction(
 
     const handlePointerUp = useCallback((
         e: React.PointerEvent,
-        onComplete: (newBoxes: Box[], shouldSaveHistory: boolean, deletedCount?: number) => void
+        onComplete: (newBoxes: Box[], newMasks: Mask[], shouldSaveHistory: boolean, deletedCount?: number) => void
     ) => {
         touchGestures.pointersRef.current.delete(e.pointerId);
 
         if (e.pointerType === 'pen' || e.pointerType === 'mouse') {
             if (interactionState.type === 'resizing' || interactionState.type === 'moving') {
                 if (interactionState.type !== 'moving' || interactionState.index !== -1) {
-                    onComplete(boxes, true);
+                    onComplete(boxes, masks, true);
                 }
                 setInteractionState({ type: 'idle' });
             } else if (interactionState.type === 'drawing') {
@@ -508,10 +559,10 @@ function usePointerInteraction(
                             y: height < 0 ? startPos.y + height : startPos.y,
                             width: Math.abs(width),
                             height: Math.abs(height),
-                            color: '', // Will be set by parent
-                            occluded: false // Will be set by parent
+                            color: '',
+                            occluded: false
                         };
-                        onComplete([...boxes, normalized], true);
+                        onComplete([...boxes, normalized], masks, true);
                     } else if (mode === 'delete') {
                         const deleteRect = {
                             x: width < 0 ? startPos.x + width : startPos.x,
@@ -529,11 +580,35 @@ function usePointerInteraction(
 
                         if (toDelete.length > 0) {
                             const newBoxes = boxes.filter((_, i) => !toDelete.includes(i));
-                            onComplete(newBoxes, true, toDelete.length);
+                            onComplete(newBoxes, masks, true, toDelete.length);
+                        }
+
+                        // Also check masks for deletion
+                        const masksToDelete: number[] = [];
+                        masks.forEach((mask, i) => {
+                            const intersects = mask.points.some(p => isPointInRect(p.x, p.y, { ...deleteRect, color: '', occluded: false }));
+                            if (intersects) {
+                                masksToDelete.push(i);
+                            }
+                        });
+
+                        if (masksToDelete.length > 0) {
+                            const newMasks = masks.filter((_, i) => !masksToDelete.includes(i));
+                            onComplete(boxes, newMasks, true, masksToDelete.length);
                         }
                     }
                 }
 
+                setInteractionState({ type: 'idle' });
+            } else if (interactionState.type === 'masking') {
+                if (interactionState.points.length > 2) {
+                    const normalized: Mask = {
+                        points: interactionState.points,
+                        color: '',
+                        occluded: false
+                    };
+                    onComplete(boxes, [...masks, normalized], true);
+                }
                 setInteractionState({ type: 'idle' });
             }
         }
@@ -550,16 +625,16 @@ function usePointerInteraction(
                 touchGestures.lastTouchMidRef.current = null;
             }
         }
-    }, [interactionState, boxes, mode, viewTransform, touchGestures]);
+    }, [interactionState, boxes, masks, mode, viewTransform, touchGestures]);
 
-    return {
+    return useMemo(() => ({
         interactionState,
         selectedBoxIndex,
         setSelectedBoxIndex,
         handlePointerDown,
         handlePointerMove,
         handlePointerUp
-    };
+    }), [interactionState, selectedBoxIndex, setSelectedBoxIndex, handlePointerDown, handlePointerMove, handlePointerUp]);
 }
 
 // ============================================================================
@@ -572,7 +647,9 @@ export default function AnnotationTool() {
     const [currentImageIndex, setCurrentImageIndex] = useState(0);
     const [currentImage, setCurrentImage] = useState<HTMLImageElement | null>(null);
     const [boxes, setBoxes] = useState<Box[]>([]);
+    const [masks, setMasks] = useState<Mask[]>([]);
     const [appState, setAppState] = useState<AppState | null>(null);
+    const [selectedMaskIndex, setSelectedMaskIndex] = useState(-1);
 
     // UI state
     const [mode, setMode] = useState<Mode>('pan');
@@ -588,16 +665,17 @@ export default function AnnotationTool() {
     const minimapViewportRef = useRef<HTMLDivElement | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
-    const apiCallTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const apiCallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Custom hooks
-    const history = useHistory<Box[]>([]);
+    const history = useHistory<{ boxes: Box[], masks: Mask[] }>({ boxes: [], masks: [] });
     const screenToCanvas = useCoordinateTransform(canvasRef, viewTransform);
     const touchGestures = useTouchGestures();
 
     const pointerInteraction = usePointerInteraction(
         mode,
         boxes,
+        masks,
         viewTransform,
         screenToCanvas,
         touchGestures,
@@ -609,6 +687,7 @@ export default function AnnotationTool() {
         canvasRef,
         currentImage,
         boxes,
+        masks,
         pointerInteraction.selectedBoxIndex,
         viewTransform,
         pointerInteraction.interactionState,
@@ -623,6 +702,7 @@ export default function AnnotationTool() {
         canvasRef,
         currentImage,
         boxes,
+        masks,
         viewTransform
     );
 
@@ -632,14 +712,11 @@ export default function AnnotationTool() {
         const canvas = canvasRef.current;
         const rect = canvas.getBoundingClientRect();
 
-        // Calculate image bounds in screen space
         const imageWidth = currentImage.width * transform.scale;
         const imageHeight = currentImage.height * transform.scale;
 
-        // Allow panning slightly beyond the edge (50px buffer)
         const buffer = 50;
 
-        // Clamp offsets so image doesn't go too far off screen
         const maxOffsetX = rect.width - buffer;
         const minOffsetX = -imageWidth + buffer;
         const maxOffsetY = rect.height - buffer;
@@ -662,18 +739,17 @@ export default function AnnotationTool() {
 
         const imageName = images[currentImageIndex];
 
-        // Clamp to actual image dimensions, not canvas/screen dimensions
         const clampedBoxes = boxes
             .map(b => clampBox(b, currentImage.width, currentImage.height))
             .filter(b => b.width > 0 && b.height > 0);
 
-        const success = await postAnnotations(imageName, clampedBoxes, currentImage.width, currentImage.height);
+        const success = await postAnnotations(imageName, clampedBoxes, masks, currentImage.width, currentImage.height);
 
         if (success) {
             setHasUnsavedChanges(false);
 
             if (appState) {
-                const newAnnotatedImages = clampedBoxes.length > 0
+                const newAnnotatedImages = (clampedBoxes.length > 0 || masks.length > 0)
                     ? appState.annotatedImages.includes(imageName)
                         ? appState.annotatedImages
                         : [...appState.annotatedImages, imageName]
@@ -691,7 +767,7 @@ export default function AnnotationTool() {
             console.error(`[Frontend] Failed to save annotations for ${imageName}`);
             setStatus({ message: 'Error saving annotations', type: 'error' });
         }
-    }, [boxes, currentImageIndex, images, appState, currentImage]);
+    }, [boxes, masks, currentImageIndex, images, appState, currentImage]);
 
     // Image management
     const { loadImage, fitImageToScreen } = useImageManager(
@@ -705,18 +781,18 @@ export default function AnnotationTool() {
             setCurrentImage(img);
             setCurrentImageIndex(index);
 
-            // Clear any pending API calls
             if (apiCallTimeoutRef.current) {
                 clearTimeout(apiCallTimeoutRef.current);
             }
 
-            // Debounce the expensive API calls
             apiCallTimeoutRef.current = setTimeout(async () => {
                 const annotations = await getAnnotations(images[index]);
                 const newBoxes = annotations?.boxes || [];
+                const newMasks = annotations?.masks || [];
                 setBoxes(newBoxes);
+                setMasks(newMasks);
                 setHasUnsavedChanges(false);
-                history.reset(newBoxes);
+                history.reset({ boxes: newBoxes, masks: newMasks });
 
                 if (appState) {
                     const newAppState = { ...appState, lastImageIndex: index };
@@ -752,7 +828,6 @@ export default function AnnotationTool() {
             if (imageList.length > 0) {
                 const startIndex = Math.min(state?.lastImageIndex || 0, imageList.length - 1);
 
-                // Load the image directly here to ensure proper initialization
                 const img = new Image();
                 img.onload = () => {
                     const canvas = canvasRef.current;
@@ -765,11 +840,12 @@ export default function AnnotationTool() {
                     setCurrentImage(img);
                     setCurrentImageIndex(startIndex);
 
-                    // Load annotations
                     getAnnotations(imageList[startIndex]).then(annotations => {
                         const newBoxes = annotations?.boxes || [];
+                        const newMasks = annotations?.masks || [];
                         setBoxes(newBoxes);
-                        history.reset(newBoxes);
+                        setMasks(newMasks);
+                        history.reset({ boxes: newBoxes, masks: newMasks });
                     });
                 };
                 img.src = `/images/${imageList[startIndex]}`;
@@ -777,7 +853,6 @@ export default function AnnotationTool() {
         })();
     }, []);
 
-    // Window resize handler
     useEffect(() => {
         const handleResize = () => {
             if (currentImage) {
@@ -788,7 +863,6 @@ export default function AnnotationTool() {
         return () => window.removeEventListener('resize', handleResize);
     }, [currentImage, fitImageToScreen]);
 
-    // Beforeunload warning
     useEffect(() => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             if (hasUnsavedChanges) {
@@ -801,64 +875,54 @@ export default function AnnotationTool() {
 
     // Event handlers
     const handlePrev = useCallback(() => {
-        if (currentImageIndex > 0) {
-            loadImage(currentImageIndex - 1);
-        }
+        if (currentImageIndex > 0) loadImage(currentImageIndex - 1);
     }, [currentImageIndex, loadImage]);
 
     const handleNext = useCallback(() => {
-        if (currentImageIndex < images.length - 1) {
-            loadImage(currentImageIndex + 1);
-        }
+        if (currentImageIndex < images.length - 1) loadImage(currentImageIndex + 1);
     }, [currentImageIndex, images.length, loadImage]);
 
     const handleModeChange = (newMode: Mode) => {
         setMode(newMode);
         pointerInteraction.setSelectedBoxIndex(-1);
+        setSelectedMaskIndex(-1);
     };
 
     const handleColorChange = useCallback((color: string) => {
-        // Always update global color for new boxes
         setCurrentColor(color);
 
-        // If a box is selected, also update that box
-        if (pointerInteraction.selectedBoxIndex >= 0) {
+        if (pointerInteraction.selectedBoxIndex >= 0 && boxes[pointerInteraction.selectedBoxIndex]) {
             const newBoxes = [...boxes];
-            newBoxes[pointerInteraction.selectedBoxIndex].color = color;
+            newBoxes[pointerInteraction.selectedBoxIndex] = {
+                ...newBoxes[pointerInteraction.selectedBoxIndex],
+                color
+            };
             setBoxes(newBoxes);
-            history.save(newBoxes);
+            history.save({ boxes: newBoxes, masks });
             setHasUnsavedChanges(true);
-            setStatus({
-                message: 'Box color updated',
-                type: 'info'
-            });
+            setStatus({ message: 'Box color updated', type: 'info' });
         }
 
-        // Save to app state
         if (appState) {
             const newAppState = { ...appState, currentColor: color };
             setAppState(newAppState);
             postState(newAppState);
         }
-    }, [pointerInteraction.selectedBoxIndex, boxes, history, appState]);
+    }, [pointerInteraction.selectedBoxIndex, boxes, masks, history, appState]);
 
-    // Mouse wheel zoom and pan
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
 
         const handleWheel = (e: WheelEvent) => {
             e.preventDefault();
-
             const rect = canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
 
-            // Zoom with mouse wheel (no modifier keys needed)
             const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
             const newScale = Math.max(0.1, Math.min(10, viewTransform.scale * zoomFactor));
 
-            // Zoom towards mouse position
             const worldPos = screenToCanvas(e.clientX, e.clientY);
             const newOffsetX = mouseX - worldPos.x * newScale;
             const newOffsetY = mouseY - worldPos.y * newScale;
@@ -868,21 +932,23 @@ export default function AnnotationTool() {
 
         canvas.addEventListener('wheel', handleWheel, { passive: false });
         return () => canvas.removeEventListener('wheel', handleWheel);
-    }, [viewTransform, screenToCanvas, canvasRef]);
+    }, [viewTransform, screenToCanvas, canvasRef, setClampedViewTransform]);
 
     const handleUndo = () => {
-        const prevBoxes = history.undo();
-        if (prevBoxes) {
-            setBoxes(prevBoxes);
+        const prevState = history.undo();
+        if (prevState) {
+            setBoxes(prevState.boxes);
+            setMasks(prevState.masks);
             setHasUnsavedChanges(true);
             setStatus({ message: 'Undone', type: 'info' });
         }
     };
 
     const handleRedo = () => {
-        const nextBoxes = history.redo();
-        if (nextBoxes) {
-            setBoxes(nextBoxes);
+        const nextState = history.redo();
+        if (nextState) {
+            setBoxes(nextState.boxes);
+            setMasks(nextState.masks);
             setHasUnsavedChanges(true);
             setStatus({ message: 'Redone', type: 'info' });
         }
@@ -891,7 +957,7 @@ export default function AnnotationTool() {
     const handleDeleteBox = (index: number) => {
         const newBoxes = boxes.filter((_, i) => i !== index);
         setBoxes(newBoxes);
-        history.save(newBoxes);
+        history.save({ boxes: newBoxes, masks });
         setHasUnsavedChanges(true);
         if (pointerInteraction.selectedBoxIndex === index) {
             pointerInteraction.setSelectedBoxIndex(-1);
@@ -901,26 +967,39 @@ export default function AnnotationTool() {
         setStatus({ message: 'Box deleted', type: 'info' });
     };
 
+    const handleDeleteMask = (index: number) => {
+        const newMasks = masks.filter((_, i) => i !== index);
+        setMasks(newMasks);
+        history.save({ boxes, masks: newMasks });
+        setHasUnsavedChanges(true);
+        if (selectedMaskIndex === index) {
+            setSelectedMaskIndex(-1);
+        } else if (selectedMaskIndex > index) {
+            setSelectedMaskIndex(selectedMaskIndex - 1);
+        }
+        setStatus({ message: 'Mask deleted', type: 'info' });
+    };
+
     const handleOccludedChange = useCallback((newOccluded: boolean) => {
-        // Always update global state for new boxes
         setIsOccluded(newOccluded);
 
-        // If a box is selected, also update that box
-        if (pointerInteraction.selectedBoxIndex >= 0) {
+        if (pointerInteraction.selectedBoxIndex >= 0 && boxes[pointerInteraction.selectedBoxIndex]) {
             const newBoxes = [...boxes];
-            newBoxes[pointerInteraction.selectedBoxIndex].occluded = newOccluded;
+            newBoxes[pointerInteraction.selectedBoxIndex] = {
+                ...newBoxes[pointerInteraction.selectedBoxIndex],
+                occluded: newOccluded
+            };
             setBoxes(newBoxes);
-            history.save(newBoxes);
+            history.save({ boxes: newBoxes, masks });
             setHasUnsavedChanges(true);
             setStatus({
                 message: `Box ${newOccluded ? 'occluded' : 'not occluded'}`,
                 type: 'info'
             });
         }
-    }, [pointerInteraction.selectedBoxIndex, boxes, history, setStatus]);
+    }, [pointerInteraction.selectedBoxIndex, boxes, masks, history]);
 
-    const handlePointerInteractionComplete = (newBoxes: Box[], shouldSaveHistory: boolean, deletedCount?: number) => {
-        // Apply current color and occluded state to new boxes
+    const handlePointerInteractionComplete = (newBoxes: Box[], newMasks: Mask[], shouldSaveHistory: boolean, deletedCount?: number) => {
         const processedBoxes = newBoxes.map((box, i) => {
             if (i === newBoxes.length - 1 && !box.color) {
                 return { ...box, color: currentColor, occluded: isOccluded };
@@ -928,9 +1007,17 @@ export default function AnnotationTool() {
             return box;
         });
 
+        const processedMasks = newMasks.map((mask, i) => {
+            if (i === newMasks.length - 1 && !mask.color) {
+                return { ...mask, color: currentColor, occluded: isOccluded };
+            }
+            return mask;
+        });
+
         setBoxes(processedBoxes);
+        setMasks(processedMasks);
         if (shouldSaveHistory) {
-            history.save(processedBoxes);
+            history.save({ boxes: processedBoxes, masks: processedMasks });
         }
         setHasUnsavedChanges(true);
 
@@ -948,9 +1035,8 @@ export default function AnnotationTool() {
             setClampedViewTransform(newTransform);
             setStatus({ message: 'View reset', type: 'info' });
         }
-    }, [currentImage, fitImageToScreen]);
+    }, [currentImage, fitImageToScreen, setClampedViewTransform]);
 
-    // Keyboard navigation
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'ArrowLeft') {
@@ -961,55 +1047,48 @@ export default function AnnotationTool() {
                 handleNext();
             }
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [currentImageIndex, images.length, hasUnsavedChanges, handlePrev, handleNext]);
+    }, [handlePrev, handleNext]);
 
-    // Keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            // Ctrl/Cmd + Z for undo
             if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
                 e.preventDefault();
                 handleUndo();
             }
-            // Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z for redo
             else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
                 e.preventDefault();
                 handleRedo();
             }
-            // Ctrl/Cmd + S for save
             else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
                 e.preventDefault();
                 saveAnnotations(true);
             }
-            // Delete or Backspace to delete selected box
             else if ((e.key === 'Delete' || e.key === 'Backspace') && pointerInteraction.selectedBoxIndex >= 0) {
                 e.preventDefault();
                 handleDeleteBox(pointerInteraction.selectedBoxIndex);
             }
-            // D key for draw mode
             else if (e.key === 'd' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 handleModeChange('draw');
             }
-            // X key for delete mode
+            else if (e.key === 'm' && !e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                handleModeChange('mask');
+            }
             else if (e.key === 'x' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 handleModeChange('delete');
             }
-            // P key for pan mode  // Add this entire block
             else if (e.key === 'p' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 handleModeChange('pan');
             }
-            // Escape to deselect
             else if (e.key === 'Escape') {
                 e.preventDefault();
                 pointerInteraction.setSelectedBoxIndex(-1);
             }
-            // O key to toggle occluded (for selected box or global state)
             else if (e.key === 'o' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 const currentOccludedState = pointerInteraction.selectedBoxIndex >= 0
@@ -1017,7 +1096,6 @@ export default function AnnotationTool() {
                     : isOccluded;
                 handleOccludedChange(!currentOccludedState);
             }
-            // R key to reset view
             else if (e.key === 'r' && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 handleResetView();
@@ -1026,7 +1104,7 @@ export default function AnnotationTool() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [handleUndo, handleRedo, saveAnnotations, handleDeleteBox, handleModeChange, handleOccludedChange, pointerInteraction, pointerInteraction.selectedBoxIndex]);
+    }, [handleUndo, handleRedo, saveAnnotations, handleDeleteBox, handleModeChange, handleOccludedChange, pointerInteraction, boxes, isOccluded, handleResetView]);
 
     return (
         <div className="m-0 p-0 h-screen overflow-hidden font-sans touch-none bg-zinc-900">
@@ -1037,7 +1115,6 @@ export default function AnnotationTool() {
                 annotatedCount={appState?.annotatedImages.length || 0}
                 mode={mode}
                 color={currentColor}
-                // isOccluded={isOccluded}
                 isOccluded={pointerInteraction.selectedBoxIndex >= 0
                     ? boxes[pointerInteraction.selectedBoxIndex]?.occluded ?? isOccluded
                     : isOccluded}
@@ -1048,7 +1125,6 @@ export default function AnnotationTool() {
                 onModeChange={handleModeChange}
                 onColorChange={handleColorChange}
                 onOccludedChange={handleOccludedChange}
-                // onOccludedChange={setIsOccluded}
                 onUndo={handleUndo}
                 onRedo={handleRedo}
                 onSave={() => saveAnnotations(true)}
@@ -1068,7 +1144,7 @@ export default function AnnotationTool() {
                             ref={canvasRef}
                             onPointerDown={(e) => pointerInteraction.handlePointerDown(
                                 e,
-                                (newBoxes) => {
+                                (newBoxes: Box[]) => {
                                     setBoxes(newBoxes);
                                     setHasUnsavedChanges(true);
                                 },
@@ -1076,7 +1152,7 @@ export default function AnnotationTool() {
                             )}
                             onPointerMove={(e) => pointerInteraction.handlePointerMove(
                                 e,
-                                (newBoxes) => {
+                                (newBoxes: Box[]) => {
                                     setBoxes(newBoxes);
                                     setHasUnsavedChanges(true);
                                 },
@@ -1094,6 +1170,10 @@ export default function AnnotationTool() {
                     selectedIndex={pointerInteraction.selectedBoxIndex}
                     onSelectBox={pointerInteraction.setSelectedBoxIndex}
                     onDeleteBox={handleDeleteBox}
+                    masks={masks}
+                    selectedMaskIndex={selectedMaskIndex}
+                    onSelectMask={setSelectedMaskIndex}
+                    onDeleteMask={handleDeleteMask}
                     minimapCanvas={minimapRef}
                     minimapViewport={minimapViewportRef}
                     viewTransform={viewTransform}
