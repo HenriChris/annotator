@@ -51,6 +51,7 @@ function useCanvasDrawing(
     currentImage: HTMLImageElement | null,
     boxes: Box[],
     masks: Mask[],
+    activeMaskPoints: Point[],
     selectedBoxIndex: number,
     viewTransform: ViewTransform,
     interactionState: InteractionState,
@@ -131,6 +132,32 @@ function useCanvasDrawing(
             ctx.setLineDash([]);
         });
 
+        // Draw active (in-progress) mask
+        if (activeMaskPoints.length > 0) {
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = 2 / scale;
+            if (isOccluded) {
+                ctx.setLineDash([10 / scale, 5 / scale]);
+            }
+
+            ctx.beginPath();
+            ctx.moveTo(activeMaskPoints[0].x, activeMaskPoints[0].y);
+            for (let i = 1; i < activeMaskPoints.length; i++) {
+                ctx.lineTo(activeMaskPoints[i].x, activeMaskPoints[i].y);
+            }
+            ctx.stroke();
+
+            // Draw start point indicator
+            ctx.setLineDash([]);
+            ctx.fillStyle = currentColor;
+            ctx.beginPath();
+            ctx.arc(activeMaskPoints[0].x, activeMaskPoints[0].y, 5 / scale, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 1 / scale;
+            ctx.stroke();
+        }
+
         // Draw current interaction
         if (interactionState.type === 'drawing') {
             const { startPos, currentPos } = interactionState;
@@ -172,7 +199,7 @@ function useCanvasDrawing(
                 ctx.setLineDash([]);
             }
         }
-    }, [canvasRef, currentImage, boxes, masks, selectedBoxIndex, viewTransform, interactionState, mode, currentColor, isOccluded]);
+    }, [canvasRef, currentImage, boxes, masks, activeMaskPoints, selectedBoxIndex, viewTransform, interactionState, mode, currentColor, isOccluded]);
 
     useEffect(() => {
         draw();
@@ -191,6 +218,7 @@ function useMinimapDrawing(
     currentImage: HTMLImageElement | null,
     boxes: Box[],
     masks: Mask[],
+    activeMaskPoints: Point[],
     viewTransform: ViewTransform
 ) {
     const drawMinimap = useCallback(() => {
@@ -245,6 +273,19 @@ function useMinimapDrawing(
             ctx.stroke();
         });
 
+        activeMaskPoints.forEach((p, i) => {
+            if (i === 0) {
+                ctx.beginPath();
+                ctx.moveTo(x + p.x * scale, y + p.y * scale);
+            } else {
+                ctx.lineTo(x + p.x * scale, y + p.y * scale);
+            }
+            if (i === activeMaskPoints.length - 1) {
+                ctx.strokeStyle = '#4a90e2';
+                ctx.stroke();
+            }
+        });
+
         const rect = canvas.getBoundingClientRect();
         const viewportScale = w / currentImage.width;
         const vpWidth = (rect.width / viewTransform.scale) * viewportScale;
@@ -256,7 +297,7 @@ function useMinimapDrawing(
         viewport.style.top = vpY + 'px';
         viewport.style.width = vpWidth + 'px';
         viewport.style.height = vpHeight + 'px';
-    }, [minimapRef, minimapViewportRef, canvasRef, currentImage, boxes, masks, viewTransform]);
+    }, [minimapRef, minimapViewportRef, canvasRef, currentImage, boxes, masks, activeMaskPoints, viewTransform]);
 
     useEffect(() => {
         drawMinimap();
@@ -380,6 +421,7 @@ function usePointerInteraction(
     mode: Mode,
     boxes: Box[],
     masks: Mask[],
+    activeMaskPoints: Point[],
     viewTransform: ViewTransform,
     screenToCanvas: (x: number, y: number) => { x: number; y: number },
     touchGestures: ReturnType<typeof useTouchGestures>,
@@ -420,6 +462,18 @@ function usePointerInteraction(
                 setSelectedBoxIndex(-1);
                 setInteractionState({ type: 'drawing', startPos: pos, currentPos: pos });
             } else if (mode === 'mask') {
+                // Check if clicking near the start point of active mask to close it
+                if (activeMaskPoints.length > 2) {
+                    const dx = pos.x - activeMaskPoints[0].x;
+                    const dy = pos.y - activeMaskPoints[0].y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 10 / viewTransform.scale) {
+                        // CLOSE MASK Handled in handlePointerUp or here?
+                        // Let's mark it as a special interaction state or just close it.
+                        setInteractionState({ type: 'masking', points: [activeMaskPoints[0]] });
+                        return;
+                    }
+                }
                 setInteractionState({ type: 'masking', points: [pos] });
                 setSelectedBoxIndex(-1);
             } else if (mode === 'delete') {
@@ -537,7 +591,7 @@ function usePointerInteraction(
 
     const handlePointerUp = useCallback((
         e: React.PointerEvent,
-        onComplete: (newBoxes: Box[], newMasks: Mask[], shouldSaveHistory: boolean, deletedCount?: number) => void
+        onComplete: (newBoxes: Box[], newMasks: Mask[], shouldSaveHistory: boolean, deletedCount?: number, partialMaskPoints?: Point[]) => void
     ) => {
         touchGestures.pointersRef.current.delete(e.pointerId);
 
@@ -578,10 +632,9 @@ function usePointerInteraction(
                             }
                         });
 
-                        if (toDelete.length > 0) {
-                            const newBoxes = boxes.filter((_, i) => !toDelete.includes(i));
-                            onComplete(newBoxes, masks, true, toDelete.length);
-                        }
+                        const newBoxes = toDelete.length > 0
+                            ? boxes.filter((_, i) => !toDelete.includes(i))
+                            : boxes;
 
                         // Also check masks for deletion
                         const masksToDelete: number[] = [];
@@ -592,22 +645,43 @@ function usePointerInteraction(
                             }
                         });
 
-                        if (masksToDelete.length > 0) {
-                            const newMasks = masks.filter((_, i) => !masksToDelete.includes(i));
-                            onComplete(boxes, newMasks, true, masksToDelete.length);
+                        const newMasks = masksToDelete.length > 0
+                            ? masks.filter((_, i) => !masksToDelete.includes(i))
+                            : masks;
+
+                        if (toDelete.length > 0 || masksToDelete.length > 0) {
+                            onComplete(newBoxes, newMasks, true, toDelete.length + masksToDelete.length);
                         }
                     }
                 }
 
                 setInteractionState({ type: 'idle' });
             } else if (interactionState.type === 'masking') {
-                if (interactionState.points.length > 2) {
-                    const normalized: Mask = {
-                        points: interactionState.points,
-                        color: '',
-                        occluded: false
-                    };
-                    onComplete(boxes, [...masks, normalized], true);
+                if (interactionState.points.length > 0) {
+                    const lastPoint = interactionState.points[interactionState.points.length - 1];
+
+                    // Check if closed
+                    if (activeMaskPoints.length > 2) {
+                        const dx = lastPoint.x - activeMaskPoints[0].x;
+                        const dy = lastPoint.y - activeMaskPoints[0].y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+
+                        if (dist < 10 / viewTransform.scale) {
+                            // Finalize Mask
+                            const finalMask: Mask = {
+                                points: [...activeMaskPoints, ...interactionState.points, activeMaskPoints[0]],
+                                color: '',
+                                occluded: false
+                            };
+                            // Atomically add mask and clear in-progress points
+                            onComplete(boxes, [...masks, finalMask], true, 0, []);
+                            setInteractionState({ type: 'idle' });
+                            return;
+                        }
+                    }
+
+                    // Just add points to active mask
+                    onComplete(boxes, masks, false, 0, [...activeMaskPoints, ...interactionState.points]);
                 }
                 setInteractionState({ type: 'idle' });
             }
@@ -625,7 +699,7 @@ function usePointerInteraction(
                 touchGestures.lastTouchMidRef.current = null;
             }
         }
-    }, [interactionState, boxes, masks, mode, viewTransform, touchGestures]);
+    }, [interactionState, boxes, masks, activeMaskPoints, mode, viewTransform, touchGestures]);
 
     return useMemo(() => ({
         interactionState,
@@ -648,6 +722,7 @@ export default function AnnotationTool() {
     const [currentImage, setCurrentImage] = useState<HTMLImageElement | null>(null);
     const [boxes, setBoxes] = useState<Box[]>([]);
     const [masks, setMasks] = useState<Mask[]>([]);
+    const [activeMaskPoints, setActiveMaskPoints] = useState<Point[]>([]);
     const [appState, setAppState] = useState<AppState | null>(null);
     const [selectedMaskIndex, setSelectedMaskIndex] = useState(-1);
 
@@ -676,6 +751,7 @@ export default function AnnotationTool() {
         mode,
         boxes,
         masks,
+        activeMaskPoints,
         viewTransform,
         screenToCanvas,
         touchGestures,
@@ -688,6 +764,7 @@ export default function AnnotationTool() {
         currentImage,
         boxes,
         masks,
+        activeMaskPoints,
         pointerInteraction.selectedBoxIndex,
         viewTransform,
         pointerInteraction.interactionState,
@@ -703,6 +780,7 @@ export default function AnnotationTool() {
         currentImage,
         boxes,
         masks,
+        activeMaskPoints,
         viewTransform
     );
 
@@ -780,6 +858,7 @@ export default function AnnotationTool() {
         async (index, img) => {
             setCurrentImage(img);
             setCurrentImageIndex(index);
+            setActiveMaskPoints([]);
 
             if (apiCallTimeoutRef.current) {
                 clearTimeout(apiCallTimeoutRef.current);
@@ -886,6 +965,7 @@ export default function AnnotationTool() {
         setMode(newMode);
         pointerInteraction.setSelectedBoxIndex(-1);
         setSelectedMaskIndex(-1);
+        setActiveMaskPoints([]);
     };
 
     const handleColorChange = useCallback((color: string) => {
@@ -999,7 +1079,18 @@ export default function AnnotationTool() {
         }
     }, [pointerInteraction.selectedBoxIndex, boxes, masks, history]);
 
-    const handlePointerInteractionComplete = (newBoxes: Box[], newMasks: Mask[], shouldSaveHistory: boolean, deletedCount?: number) => {
+    const handlePointerInteractionComplete = (
+        newBoxes: Box[],
+        newMasks: Mask[],
+        shouldSaveHistory: boolean,
+        deletedCount?: number,
+        partialMaskPoints?: Point[]
+    ) => {
+        // Handle in-progress mask
+        if (partialMaskPoints !== undefined) {
+            setActiveMaskPoints(partialMaskPoints);
+        }
+
         const processedBoxes = newBoxes.map((box, i) => {
             if (i === newBoxes.length - 1 && !box.color) {
                 return { ...box, color: currentColor, occluded: isOccluded };
@@ -1023,7 +1114,7 @@ export default function AnnotationTool() {
 
         if (deletedCount) {
             setStatus({
-                message: `Deleted ${deletedCount} box${deletedCount > 1 ? 'es' : ''}`,
+                message: `Deleted ${deletedCount} item${deletedCount > 1 ? 's' : ''}`,
                 type: 'info'
             });
         }
